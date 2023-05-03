@@ -1,0 +1,28 @@
+{
+  "name": "@buildt/ssdb",
+  "version": "0.0.0",
+  "description": "A pure TypeScript implementation of the HNSW algorithm for approximate nearest neighbour search.",
+  "main": "./dist/index.js",
+  "private": true,
+  "scripts": {
+    "test": "jest",
+    "build": "tsc"
+  },
+  "keywords": [
+    "hnsw",
+    "ts",
+    "typescript",
+    "nearest",
+    "neighbour",
+    "search",
+    "algorithm"
+  ],
+  "author": "Alistair Pullen",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/jest": "^29.5.1",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.4"
+  }
+}
