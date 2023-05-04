@@ -370,6 +370,10 @@ export class HNSW {
     return this.maxLevel;
   }
 
+  public getNodes(): IterableIterator<HNSWNode> {
+    return this.nodes.values();
+  }
+
   public clear(): void {
     this.nodes = new Map();
     this.entryPoint = null;

@@ -118,5 +118,28 @@ describe('HNSW', () => {
     expect(hnsw.getMaxLevel()).toBe(0);
   });
   
+  test('should check n unique writes result in n nodes', () => {
+    const hnsw = new HNSW('cosine', numDimensions, M, ef);
+  
+    const numNodes = 10;
+    for (let i = 0; i < numNodes; i++) {
+      const vector = generateRandomVector(numDimensions);
+      hnsw.addNode(i, vector);
+    }
+  
+    expect(hnsw.getSize()).toBe(numNodes);
+  })
+
+  test('should check n writes of the same id result in 1 node', () => {
+    const hnsw = new HNSW('cosine', numDimensions, M, ef);
+  
+    const nodeId = 0;
+    const vector = generateRandomVector(numDimensions);
+    for (let i = 0; i < 10; i++) {
+      hnsw.addNode(nodeId, vector);
+    }
+  
+    expect(hnsw.getSize()).toBe(1);
+  })
 
 });
