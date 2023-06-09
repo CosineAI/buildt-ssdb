@@ -138,46 +138,52 @@ export default class HNSW {
 
   public addNode(node_id: number, vector: number[]) {
     if (this.enter_point === null) {
-      const node = new Node(node_id, vector)
-      this.insertNode(node, 0)
-      this.enter_point = node_id
-      return
+      const node = new Node(node_id, vector);
+      this.insertNode(node, 0);
+      this.enter_point = node_id;
+      return;
     }
-
-    const maxLevel = Math.floor(Math.log2(Object.keys(this.nodes).length)) + 1
-    let curLevel = 0
+  
+    const maxLevel = Math.floor(Math.log2(Object.keys(this.nodes).length)) + 1;
+    let curLevel = 0;
     while (Math.random() < 0.5 && curLevel < maxLevel) {
-      curLevel += 1
+      curLevel += 1;
     }
-
-    const node = new Node(node_id, vector)
-    this.insertNode(node, curLevel)
-
-    let curNodeId = this.enter_point
-    curLevel = this.levels.length - 1
-
-    while (curLevel > (node.level as number)) {
-      const candidates = this.searchLayer(curNodeId, vector, 1)
-      curNodeId = candidates[0][1]
-      curLevel -= 1
+  
+    const node = new Node(node_id, vector);
+    this.insertNode(node, curLevel);
+  
+    let curNodeId = this.enter_point;
+    let startLevel = this.levels.length - 1;
+  
+    // Skipping unnecessary levels above the current node's level
+    if (curLevel < startLevel) {
+      startLevel = curLevel;
     }
-
-    while (curLevel >= 0) {
-      const candidates = this.searchLayer(curNodeId, vector, this.M)
-      curNodeId = candidates[0][1]
-
+  
+    while (startLevel > (node.level as number)) {
+      const candidates = this.searchLayer(curNodeId, vector, 1);
+      curNodeId = candidates[0][1];
+      startLevel -= 1;
+    }
+  
+    while (startLevel >= 0) {
+      const candidates = this.searchLayer(curNodeId, vector, this.M);
+      curNodeId = candidates[0][1];
+  
       if (candidates.length > this.M) {
-        candidates.splice(0, candidates.length - this.M)
+        candidates.splice(0, candidates.length - this.M);
       }
-
+  
       for (const [, neighborId] of candidates) {
-        node.addNeighbor(neighborId)
-        this.nodes[neighborId].addNeighbor(node_id)
+        node.addNeighbor(neighborId);
+        this.nodes[neighborId].addNeighbor(node_id);
       }
-
-      curLevel -= 1
+  
+      startLevel -= 1;
     }
-  }
+  }  
+  
 
   public serialize(): Uint8Array {
     // Compute the size needed for the buffer
