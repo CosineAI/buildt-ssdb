@@ -1,268 +1,241 @@
-/**
- * Authors: Alistair Pullen, GPT-4
- */
+import { MinHeap } from "./minheap"
 
-export type SimilarityMetric = "cosine" | "euclidean"
+export class Node {
+  public node_id: number
+  public vector: number[]
+  public level: number | null
+  public neighbors: Set<number>
 
-export class HNSWNode {
-  id: number
-  vector: Float32Array
-  level: number
-  neighbors: HNSWNode[][]
-
-  constructor(id: number, vector: Float32Array, level: number, M: number) {
-    this.id = id
+  constructor(node_id: number, vector: number[]) {
+    this.node_id = node_id
     this.vector = vector
-    this.level = level
-    this.neighbors = new Array(level + 1).fill(null).map(() => new Array(M).fill(null))
+    this.level = null
+    this.neighbors = new Set()
+  }
+
+  public addNeighbor(node_id: number) {
+    this.neighbors.add(node_id)
   }
 }
 
-export type ScoredNode = {
-  node: HNSWNode
-  score: number
-}
-
-export class HNSW {
-  private similarityMetric: SimilarityMetric
-  private numDimensions: number
+export default class HNSW {
   private M: number
-  private ef: number
-  private maxLevel: number
-  private entryPoint: HNSWNode | null
-  private nodes: Map<number, HNSWNode>
+  private ef_construction: number
+  private nodes: { [id: number]: Node }
+  private levels: Node[][]
+  private enter_point: number | null
 
-  constructor(similarityMetric: SimilarityMetric, numDimensions: number, M: number, ef: number) {
-    this.similarityMetric = similarityMetric
-    this.numDimensions = numDimensions
+  constructor(M = 16, ef_construction = 200) {
     this.M = M
-    this.ef = ef
-    this.maxLevel = 0
-    this.entryPoint = null
-    this.nodes = new Map()
+    this.ef_construction = ef_construction
+    this.nodes = {}
+    this.levels = []
+    this.enter_point = null
   }
 
-  private randomLevel(): number {
-    let level = 0
-    while (Math.random() < 1 / Math.E && level < this.maxLevel) {
-      level++
+  private cosineSimilarity(a: number[], b: number[]): number {
+    let dotProduct = 0
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i]
     }
-    return level
+    return dotProduct
   }
 
-  private computeDistance(a: Float32Array, b: Float32Array): number {
-    let distance = 0
-    if (this.similarityMetric === "euclidean") {
-      for (let i = 0; i < this.numDimensions; i++) {
-        distance += Math.pow(a[i] - b[i], 2)
-      }
-      return Math.sqrt(distance)
-    } else if (this.similarityMetric === "cosine") {
-      let dotProduct = 0
-      let normA = 0
-      let normB = 0
-      for (let i = 0; i < this.numDimensions; i++) {
-        dotProduct += a[i] * b[i]
-        normA += Math.pow(a[i], 2)
-        normB += Math.pow(b[i], 2)
-      }
-      return 1 - dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
-    } else {
-      throw new Error("Invalid similarity metric")
+  private insertNode(node: Node, level: number): number {
+    const node_id = node.node_id
+    node.level = level
+    this.nodes[node_id] = node
+    while (level >= this.levels.length) {
+      this.levels.push([])
     }
+    this.levels[level].push(node)
+    return node_id
   }
 
-  private searchLevel(query: Float32Array, entryPoint: HNSWNode, level: number): HNSWNode {
-    let current = entryPoint
-    let bestDistance = this.computeDistance(query, current.vector)
-    let changed = true
-
-    while (changed) {
-      changed = false
-      for (const neighbor of current.neighbors[level]) {
-        if (!neighbor) {
-          break
-        }
-        const distance = this.computeDistance(query, neighbor.vector)
-        if (distance < bestDistance) {
-          bestDistance = distance
-          current = neighbor
-          changed = true
-        }
-      }
-    }
-
-    return current
-  }
-
-  public addNode(id: number, vector: Float32Array): void {
-    const level = this.randomLevel()
-    const newNode = new HNSWNode(id, vector, level, this.M)
-
-    if (!this.entryPoint) {
-      this.entryPoint = newNode
-      this.nodes.set(id, newNode)
+  public deleteNode(nodeId: number): void {
+    if (!(nodeId in this.nodes)) {
+      console.log(`Node with ID ${nodeId} not found.`)
       return
     }
 
-    if (level > this.maxLevel) {
-      this.maxLevel = level
+    const node = this.nodes[nodeId]
+    const level = node.level as number
+
+    for (const neighborId of node.neighbors) {
+      const neighbor = this.nodes[neighborId]
+      neighbor.neighbors.delete(nodeId)
     }
 
-    let currentNode = this.searchLevel(vector, this.entryPoint, this.maxLevel)
+    const indexInLevel = this.levels[level].findIndex(n => n.node_id === nodeId)
+    if (indexInLevel !== -1) {
+      this.levels[level].splice(indexInLevel, 1)
+    }
 
-    for (let i = this.maxLevel; i >= 0; i--) {
-      if (i <= level) {
-        const neighbors = this._searchKNN(currentNode, vector, this.M, i).map(el => el.node)
-        newNode.neighbors[i] = neighbors.slice(0, this.M)
+    delete this.nodes[nodeId]
 
-        for (const neighbor of neighbors) {
-          const nDist = this.computeDistance(neighbor.vector, vector)
-          const furthestNeighborIndex = neighbor.neighbors[i].findIndex(n => n === null || nDist < this.computeDistance(neighbor.vector, n.vector))
-          if (furthestNeighborIndex !== -1) {
-            neighbor.neighbors[i].splice(furthestNeighborIndex, 0, newNode)
-            if (neighbor.neighbors[i].length > this.M) {
-              neighbor.neighbors[i].pop()
-            }
+    if (this.levels[level].length === 0) {
+      this.levels.splice(level, 1)
+    }
+  }
+
+  private searchLayer(node_id: number, query: number[], ef: number): [number, number][] {
+    const visited = new Set<number>()
+    const candidates: [number, number][] = [[-1.0, node_id]]
+    const bestCandidates: [number, number][] = []
+
+    const minHeap = new MinHeap<[number, number]>((a, b) => a[0] - b[0])
+
+    while (candidates.length > 0) {
+      const [dist, curNodeId] = candidates.pop() as [number, number]
+      if (!visited.has(curNodeId)) {
+        visited.add(curNodeId)
+        const curNode = this.nodes[curNodeId]
+
+        if (bestCandidates.length < ef || dist > bestCandidates[0][0]) {
+          minHeap.push([dist, curNodeId])
+          if (minHeap.size() > ef) {
+            minHeap.pop()
           }
         }
-      }
 
-      if (i > 0) {
-        currentNode = this.searchLevel(vector, currentNode, i - 1)
-      }
-    }
-
-    this.nodes.set(id, newNode)
-  }
-
-  private _searchKNN(entryPoint: HNSWNode, query: Float32Array, k: number, level: number): ScoredNode[] {
-    const visited = new Set<number>()
-    const entryPointScoredNode: ScoredNode = { node: entryPoint, score: this.computeDistance(query, entryPoint.vector) }
-    const candidates = new Set<ScoredNode>([entryPointScoredNode])
-    const result = new Array<ScoredNode>()
-
-    while (candidates.size > 0) {
-      const closest = Array.from(candidates).reduce((best, curr) => {
-        return curr.score < best.score ? curr : best
-      })
-
-      candidates.delete(closest)
-      visited.add(closest.node.id)
-
-      if (result.length < k) {
-        result.push(closest)
-      } else {
-        const furthestResult = result.reduce((furthest, curr) => {
-          return curr.score > furthest.score ? curr : furthest
-        })
-
-        if (closest.score < furthestResult.score) {
-          result.splice(result.indexOf(furthestResult), 1, closest)
+        if (curNode) {
+          for (const neighborId of curNode.neighbors) {
+            if (!visited.has(neighborId)) {
+              const neighbor = this.nodes[neighborId]
+              const dist = this.cosineSimilarity(query, neighbor.vector)
+              candidates.push([dist, neighborId])
+            }
+          }
         } else {
-          break
+          return []
         }
-      }
-
-      for (const neighbor of closest.node.neighbors[level]) {
-        if (!neighbor || visited.has(neighbor.id)) {
-          continue
-        }
-        const neighborScoredNode: ScoredNode = { node: neighbor, score: this.computeDistance(query, neighbor.vector) }
-        candidates.add(neighborScoredNode)
       }
     }
 
-    return result.sort((a, b) => a.score - b.score)
-  }
-
-  public searchKNN(query: Float32Array, k: number): ScoredNode[] {
-    if (!this.entryPoint) {
-      return []
+    while (minHeap.size() > 0) {
+      bestCandidates.push(minHeap.pop() as [number, number])
     }
-    const entryPoint = this.searchLevel(query, this.entryPoint, this.maxLevel)
-    return this._searchKNN(entryPoint, query, k, 0)
+
+    return bestCandidates.sort((a, b) => b[0] - a[0])
   }
 
-  public deleteNode(id: number): void {
-    const nodeToDelete = this.nodes.get(id)
-    if (!nodeToDelete) {
-      console.warn(`Node with ID ${id} not found. Skipping delete.`)
+  public search(query: number[], ef?: number): [number, number][] {
+    if (ef === undefined) {
+      ef = this.ef_construction
+    }
+
+    let curNodeId = this.enter_point
+    let curLevel = this.levels.length - 1
+
+    while (curLevel > 0) {
+      const candidates = this.searchLayer(curNodeId as number, query, 1)
+      curNodeId = candidates[0][1]
+      curLevel -= 1
+    }
+
+    return this.searchLayer(curNodeId as number, query, ef as number)
+  }
+
+  public addNode(node_id: number, vector: number[]) {
+    if (this.enter_point === null) {
+      const node = new Node(node_id, vector)
+      this.insertNode(node, 0)
+      this.enter_point = node_id
       return
     }
 
-    for (let level = 0; level <= nodeToDelete.level; level++) {
-      const neighbors = nodeToDelete.neighbors[level]
-      for (const neighbor of neighbors) {
-        if (!neighbor) {
-          continue
-        }
-        const index = neighbor.neighbors[level].findIndex(n => n && n.id === id)
-        if (index !== -1) {
-          neighbor.neighbors[level].splice(index, 1)
-          neighbor.neighbors[level].push(undefined as any)
-        }
-      }
+    const maxLevel = Math.floor(Math.log2(Object.keys(this.nodes).length)) + 1
+    let curLevel = 0
+    while (Math.random() < 0.5 && curLevel < maxLevel) {
+      curLevel += 1
     }
 
-    if (this.entryPoint && this.entryPoint.id === id) {
-      this.entryPoint = null
-      this.maxLevel = 0
-      for (const node of this.nodes.values()) {
-        if (node.level > this.maxLevel) {
-          this.entryPoint = node
-          this.maxLevel = node.level
-        }
-      }
+    const node = new Node(node_id, vector)
+    this.insertNode(node, curLevel)
+
+    let curNodeId = this.enter_point
+    curLevel = this.levels.length - 1
+
+    while (curLevel > (node.level as number)) {
+      const candidates = this.searchLayer(curNodeId, vector, 1)
+      curNodeId = candidates[0][1]
+      curLevel -= 1
     }
 
-    this.nodes.delete(id)
+    while (curLevel >= 0) {
+      const candidates = this.searchLayer(curNodeId, vector, this.M)
+      curNodeId = candidates[0][1]
+
+      if (candidates.length > this.M) {
+        candidates.splice(0, candidates.length - this.M)
+      }
+
+      for (const [, neighborId] of candidates) {
+        node.addNeighbor(neighborId)
+        this.nodes[neighborId].addNeighbor(node_id)
+      }
+
+      curLevel -= 1
+    }
   }
 
   public serialize(): Uint8Array {
-    const nodeCount = this.nodes.size
-    const headerSize = 1 + 4 * 4
-    const nodeSize = 4 + this.numDimensions * 4 + 4 + this.M * 4 * (this.maxLevel + 1)
-    const bufferSize = headerSize + nodeCount * nodeSize
+    // Compute the size needed for the buffer
+    let bufferSize = 16 // M (4 bytes) + ef_construction (4 bytes) + nodesCount (4 bytes) + enter_point (4 bytes)
+    for (const nodeId in this.nodes) {
+      const node = this.nodes[nodeId]
+      bufferSize += 12 + node.vector.length * 4 + 4 + node.neighbors.size * 4
+    }
+    bufferSize += 4 // levelsCount (4 bytes)
+    for (const level of this.levels) {
+      bufferSize += 4 + level.length * 4
+    }
 
     const buffer = new ArrayBuffer(bufferSize)
     const view = new DataView(buffer)
-
     let offset = 0
 
-    view.setUint8(offset, this.similarityMetric === "cosine" ? 0 : 1)
-    offset += 1
-
-    view.setUint32(offset, this.numDimensions, true)
+    // Serialize M, ef_construction, and enter_point
+    view.setInt32(offset, this.M)
+    offset += 4
+    view.setInt32(offset, this.ef_construction)
+    offset += 4
+    view.setInt32(offset, this.enter_point !== null ? this.enter_point : -1)
     offset += 4
 
-    view.setUint32(offset, this.M, true)
+    // Serialize nodes
+    const nodeIds = Object.keys(this.nodes).map(k => parseInt(k))
+    view.setInt32(offset, nodeIds.length)
     offset += 4
-
-    view.setUint32(offset, this.ef, true)
-    offset += 4
-
-    view.setUint32(offset, this.entryPoint ? this.entryPoint.id : -1, true)
-    offset += 4
-
-    for (const node of this.nodes.values()) {
-      view.setUint32(offset, node.id, true)
+    for (const nodeId of nodeIds) {
+      const node = this.nodes[nodeId]
+      view.setInt32(offset, node.node_id)
       offset += 4
-
-      for (let i = 0; i < this.numDimensions; i++) {
-        view.setFloat32(offset, node.vector[i], true)
+      view.setInt32(offset, node.vector.length)
+      offset += 4
+      for (const value of node.vector) {
+        view.setFloat32(offset, value)
         offset += 4
       }
-
-      view.setUint32(offset, node.level, true)
+      view.setInt32(offset, node.level as number)
       offset += 4
+      view.setInt32(offset, node.neighbors.size)
+      offset += 4
+      for (const neighborId of node.neighbors) {
+        view.setInt32(offset, neighborId)
+        offset += 4
+      }
+    }
 
-      for (let i = 0; i <= this.maxLevel; i++) {
-        for (let j = 0; j < this.M; j++) {
-          const neighbor = node.neighbors[i][j]
-          view.setUint32(offset, neighbor ? neighbor.id : -1, true)
-          offset += 4
-        }
+    // Serialize levels
+    view.setInt32(offset, this.levels.length)
+    offset += 4
+    for (const level of this.levels) {
+      view.setInt32(offset, level.length)
+      offset += 4
+      for (const node of level) {
+        view.setInt32(offset, node.node_id)
+        offset += 4
       }
     }
 
@@ -270,100 +243,79 @@ export class HNSW {
   }
 
   public static deserialize(data: Uint8Array): HNSW {
-    const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-
+    const buffer = data.buffer
+    const view = new DataView(buffer)
     let offset = 0
 
-    const similarityMetric = view.getUint8(offset) === 0 ? "cosine" : "euclidean"
-    offset += 1
-
-    const numDimensions = view.getUint32(offset, true)
+    // Deserialize M, ef_construction, and enter_point
+    const M = view.getInt32(offset)
+    offset += 4
+    const ef_construction = view.getInt32(offset)
+    offset += 4
+    const enter_point = view.getInt32(offset)
     offset += 4
 
-    const M = view.getUint32(offset, true)
+    const hnsw = new HNSW(M, ef_construction)
+    hnsw.enter_point = enter_point !== -1 ? enter_point : null
+
+    // Deserialize nodes
+    const nodesCount = view.getInt32(offset)
     offset += 4
-
-    const ef = view.getUint32(offset, true)
-    offset += 4
-
-    const entryPointId = view.getUint32(offset, true)
-    offset += 4
-
-    const hnsw = new HNSW(similarityMetric, numDimensions, M, ef)
-
-    // Temporary storage for neighbor IDs
-    const tempNeighborIds: Map<number, number[][]> = new Map()
-
-    while (offset < data.byteLength) {
-      const id = view.getUint32(offset, true)
+    for (let i = 0; i < nodesCount; i++) {
+      const node_id = view.getInt32(offset)
       offset += 4
-
-      const vector = new Float32Array(numDimensions)
-      for (let i = 0; i < numDimensions; i++) {
-        vector[i] = view.getFloat32(offset, true)
+      const vectorLen = view.getInt32(offset)
+      offset += 4
+      const vector: number[] = []
+      for (let j = 0; j < vectorLen; j++) {
+        vector.push(view.getFloat32(offset))
+        offset += 4
+      }
+      const level = view.getInt32(offset)
+      offset += 4
+      const neighborsCount = view.getInt32(offset)
+      offset += 4
+      const neighbors = new Set<number>()
+      for (let j = 0; j < neighborsCount; j++) {
+        neighbors.add(view.getInt32(offset))
         offset += 4
       }
 
-      const level = view.getUint32(offset, true)
-      offset += 4
-
-      const node = new HNSWNode(id, vector, level, M)
-
-      const neighborIds: number[][] = []
-      for (let i = 0; i <= hnsw.maxLevel; i++) {
-        neighborIds[i] = []
-        for (let j = 0; j < M; j++) {
-          const neighborId = view.getUint32(offset, true)
-          offset += 4
-          neighborIds[i].push(neighborId)
-        }
-      }
-
-      tempNeighborIds.set(id, neighborIds)
-
-      hnsw.nodes.set(id, node)
-      if (id === entryPointId) {
-        hnsw.entryPoint = node
-        hnsw.maxLevel = level
-      }
+      const node = new Node(node_id, vector)
+      node.level = level
+      node.neighbors = neighbors
+      hnsw.nodes[node_id] = node
     }
 
-    // Assign neighbors after all nodes have been created
-    tempNeighborIds.forEach((neighborIds, nodeId) => {
-      const node = hnsw.nodes.get(nodeId)
-      if (node) {
-        neighborIds.forEach((ids, level) => {
-          ids.forEach((id, j) => {
-            if (id !== -1 && hnsw.nodes.has(id)) {
-              node.neighbors[level][j] = hnsw.nodes.get(id)!
-            }
-          })
-        })
+    // Deserialize levels
+    const levelsCount = view.getInt32(offset)
+    offset += 4
+    for (let i = 0; i < levelsCount; i++) {
+      const levelLen = view.getInt32(offset)
+      offset += 4
+      const level: Node[] = []
+      for (let j = 0; j < levelLen; j++) {
+        const nodeId = view.getInt32(offset)
+        offset += 4
+        level.push(hnsw.nodes[nodeId])
       }
-    })
+      hnsw.levels.push(level)
+    }
 
     return hnsw
   }
 
-  public getNodeById(id: number): HNSWNode | undefined {
-    return this.nodes.get(id)
-  }
-
   public getSize(): number {
-    return this.nodes.size
+    return Object.keys(this.nodes).length
   }
 
-  public getEntryPoint(): HNSWNode | null {
-    return this.entryPoint
-  }
-
-  public getMaxLevel(): number {
-    return this.maxLevel
+  public getEntryPoint(): number | null {
+    return this.enter_point
   }
 
   public clear(): void {
-    this.nodes = new Map()
-    this.entryPoint = null
-    this.maxLevel = 0
+    this.nodes = {}
+    this.levels = []
+    this.enter_point = null
   }
 }

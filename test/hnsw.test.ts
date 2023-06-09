@@ -1,144 +1,132 @@
-import { HNSW } from "../src/index" // Adjust the import path according to your project structure
-
-// Helper function to generate random vectors for testing
-function generateRandomVector(dimensions: number): Float32Array {
-  const vector = new Float32Array(dimensions)
-  for (let i = 0; i < dimensions; i++) {
-    vector[i] = Math.random() * 2 - 1 // Generate a random value between -1 and 1
-  }
-  return vector
-}
+import HNSW from "../src/index"
+import { readNdjson } from "./utils"
+import { readFileSync } from "fs"
+import { EXPECTED_SEARCH_RESULTS } from "./dummy-data/expected-search-results"
+import { join } from "path"
 
 describe("HNSW", () => {
-  const numDimensions = 5
-  const M = 16
-  const ef = 50
+  let hnsw: HNSW
+  const dummyData = join(__dirname, "dummy-data")
 
-  test("should initialize and add nodes", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
-
-    const nodeId = 0
-    const vector = generateRandomVector(numDimensions)
-    hnsw.addNode(nodeId, vector)
-
-    expect(hnsw.getSize()).toBe(1)
-    expect(hnsw.getNodeById(nodeId)).toBeDefined()
-    expect(hnsw.getNodeById(nodeId)?.vector).toEqual(vector)
+  beforeEach(() => {
+    hnsw = new HNSW()
   })
 
-  test("should delete nodes", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
+  describe("constructor", () => {
+    it("should initialize with default values", () => {
+      expect(hnsw.getSize()).toBe(0)
+      expect(hnsw.getEntryPoint()).toBeNull()
+    })
 
-    const nodeId = 0
-    const vector = generateRandomVector(numDimensions)
-    hnsw.addNode(nodeId, vector)
-    hnsw.deleteNode(nodeId)
-
-    expect(hnsw.getSize()).toBe(0)
-    expect(hnsw.getNodeById(nodeId)).toBeUndefined()
+    it("should accept custom values", () => {
+      const customHnsw = new HNSW(10, 100)
+      expect(customHnsw.getSize()).toBe(0)
+      expect(customHnsw.getEntryPoint()).toBeNull()
+    })
   })
 
-  test("should find nearest neighbors", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
+  describe("addNode", () => {
+    it("should add a node", () => {
+      hnsw.addNode(1, [1, 2])
+      expect(hnsw.getSize()).toBe(1)
+      expect(hnsw.getEntryPoint()).toBe(1)
+    })
 
-    const numNodes = 10
-    for (let i = 0; i < numNodes; i++) {
-      const vector = generateRandomVector(numDimensions)
-      hnsw.addNode(i, vector)
-    }
+    it("should contain the correct number of vectors when reading from a known index", async () => {
+      const embeddings = readNdjson(join(dummyData, "embeddings.test.ndjson"))
+      const index = new HNSW()
 
-    const queryVector = generateRandomVector(numDimensions)
-    const k = 5
-    const nearestNeighbors = hnsw.searchKNN(queryVector, k)
+      for (const [nodeId, vector] of Object.entries(embeddings)) {
+        index.addNode(parseInt(nodeId), vector)
+      }
 
-    expect(nearestNeighbors.length).toBe(k)
+      expect(index.getSize()).toBe(420)
+    })
   })
 
-  test("should serialize and deserialize correctly", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
+  describe("deleteNode", () => {
+    it("should delete a node", () => {
+      hnsw.addNode(1, [1, 2])
+      hnsw.deleteNode(1)
+      expect(hnsw.getSize()).toBe(0)
+    })
 
-    const numNodes = 10
-    for (let i = 0; i < numNodes; i++) {
-      const vector = generateRandomVector(numDimensions)
-      hnsw.addNode(i, vector)
-    }
+    it("should handle deletion of non-existent node", () => {
+      // Capture console output
+      const consoleOutput: string[] = []
+      console.log = (output: string) => consoleOutput.push(output)
 
-    const serializedData = hnsw.serialize()
-    const deserializedHNSW = HNSW.deserialize(serializedData)
-
-    const queryVector = generateRandomVector(numDimensions)
-    const k = 5
-    const nearestNeighbors = hnsw.searchKNN(queryVector, k).map(n => n.node)
-    const deserializedNearestNeighbors = deserializedHNSW.searchKNN(queryVector, k).map(n => n.node)
-
-    expect(nearestNeighbors.map(n => n.id)).toEqual(deserializedNearestNeighbors.map(n => n.id))
+      hnsw.deleteNode(1)
+      expect(consoleOutput.length).toBe(1)
+      expect(consoleOutput[0]).toBe("Node with ID 1 not found.")
+    })
   })
 
-  test("should get node by id", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
+  describe("search", () => {
+    it("should return an empty array if no nodes have been added", () => {
+      const result = hnsw.search([1, 2])
+      expect(result).toEqual([])
+    })
 
-    const nodeId = 0
-    const vector = generateRandomVector(numDimensions)
-    hnsw.addNode(nodeId, vector)
+    it("should return the correct search results when reading from a known index", async () => {
+      const index = HNSW.deserialize(readFileSync(join(dummyData, "index.bin")))
+      const queryVector = JSON.parse(readFileSync(join(dummyData, "prompt.test.ndjson"), "utf8").split("\n")[0])["vector"] as number[]
 
-    const node = hnsw.getNodeById(nodeId)
+      expect(index.getSize()).toBe(420)
+      const results = index.search(queryVector, 10)
+      expect(results.length).toBe(10)
 
-    expect(node).toBeDefined()
-    expect(node!.id).toBe(nodeId)
-    expect(node!.vector).toEqual(vector)
+      for (const [index, [score, nodeId]] of results.entries()) {
+        expect(score).toBeCloseTo(EXPECTED_SEARCH_RESULTS[index].cosineSimilarity, 4)
+        expect(nodeId).toBe(EXPECTED_SEARCH_RESULTS[index].nodeId)
+      }
+    })
+    // Add more tests for searching, depending on the behavior expected
   })
 
-  test("should get the total size of the index", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
+  describe("serialize & deserialize", () => {
+    it("should serialize and deserialize correctly", () => {
+      hnsw.addNode(1, [1, 2])
+      const serialized = hnsw.serialize()
+      const deserializedHnsw = HNSW.deserialize(serialized)
 
-    const numNodes = 10
-    for (let i = 0; i < numNodes; i++) {
-      const vector = generateRandomVector(numDimensions)
-      hnsw.addNode(i, vector)
-    }
+      expect(deserializedHnsw.getSize()).toBe(1)
+      expect(deserializedHnsw.getEntryPoint()).toBe(1)
+    })
 
-    const size = hnsw.getSize()
+    it("should have the same results after deserializing the index", async () => {
+      const embeddings = readNdjson(join(dummyData, "embeddings.test.ndjson"))
+      const queryVector = JSON.parse(readFileSync(join(dummyData, "prompt.test.ndjson"), "utf8").split("\n")[0])["vector"] as number[]
+      const cleanIndex = new HNSW()
 
-    expect(size).toBe(numNodes)
+      for (const [nodeId, vector] of Object.entries(embeddings)) {
+        cleanIndex.addNode(parseInt(nodeId), vector)
+      }
+
+      const cleanResults = cleanIndex.search(queryVector, 10)
+      expect(cleanResults.length).toBe(10)
+
+      const serialized = cleanIndex.serialize()
+
+      const deserializedIndex = HNSW.deserialize(serialized)
+
+      const deserializedResults = deserializedIndex.search(queryVector, 10)
+      expect(deserializedResults.length).toBe(10)
+
+      for (const [index, [cleanScore, cleanNodeId]] of cleanResults.entries()) {
+        const [deserializedScore, deserializedNodeId] = deserializedResults[index]
+        expect(cleanScore).toBeCloseTo(deserializedScore, 4)
+        expect(cleanNodeId).toBe(deserializedNodeId)
+      }
+    })
   })
 
-  test("should clear the index", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
-
-    const numNodes = 10
-    for (let i = 0; i < numNodes; i++) {
-      const vector = generateRandomVector(numDimensions)
-      hnsw.addNode(i, vector)
-    }
-
-    hnsw.clear()
-
-    expect(hnsw.getSize()).toBe(0)
-    expect(hnsw.getEntryPoint()).toBeNull()
-    expect(hnsw.getMaxLevel()).toBe(0)
-  })
-
-  test("should check n unique writes result in n nodes", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
-
-    const numNodes = 10
-    for (let i = 0; i < numNodes; i++) {
-      const vector = generateRandomVector(numDimensions)
-      hnsw.addNode(i, vector)
-    }
-
-    expect(hnsw.getSize()).toBe(numNodes)
-  })
-
-  test("should check n writes of the same id result in 1 node", () => {
-    const hnsw = new HNSW("cosine", numDimensions, M, ef)
-
-    const nodeId = 0
-    const vector = generateRandomVector(numDimensions)
-    for (let i = 0; i < 10; i++) {
-      hnsw.addNode(nodeId, vector)
-    }
-
-    expect(hnsw.getSize()).toBe(1)
+  describe("clear", () => {
+    it("should clear all nodes", () => {
+      hnsw.addNode(1, [1, 2])
+      hnsw.clear()
+      expect(hnsw.getSize()).toBe(0)
+      expect(hnsw.getEntryPoint()).toBeNull()
+    })
   })
 })
