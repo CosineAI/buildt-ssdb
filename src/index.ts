@@ -25,7 +25,7 @@ export default class HNSW {
   private levels: Node[][]
   private enter_point: number | null
 
-  constructor(M = 16, ef_construction = 200) {
+  constructor(M = 12, ef_construction = 50) {
     this.M = M
     this.ef_construction = ef_construction
     this.nodes = {}
@@ -85,6 +85,8 @@ export default class HNSW {
 
     const minHeap = new MinHeap<[number, number]>((a, b) => a[0] - b[0])
 
+    let bestSim = -Infinity
+
     while (candidates.length > 0) {
       const [dist, curNodeId] = candidates.pop() as [number, number]
       if (!visited.has(curNodeId)) {
@@ -98,12 +100,16 @@ export default class HNSW {
           }
         }
 
+        if (dist > bestSim) {
+          bestSim = dist
+        }
+
         if (curNode) {
           for (const neighborId of curNode.neighbors) {
             if (!visited.has(neighborId)) {
               const neighbor = this.nodes[neighborId]
-              const dist = this.cosineSimilarity(query, neighbor.vector)
-              candidates.push([dist, neighborId])
+              const sim = this.cosineSimilarity(query, neighbor.vector)
+              if (sim > bestSim) candidates.push([sim, neighborId])
             }
           }
         } else {
@@ -116,7 +122,7 @@ export default class HNSW {
       bestCandidates.push(minHeap.pop() as [number, number])
     }
 
-    return bestCandidates.sort((a, b) => b[0] - a[0])
+    return bestCandidates
   }
 
   public search(query: number[], ef?: number): [number, number][] {
@@ -138,52 +144,51 @@ export default class HNSW {
 
   public addNode(node_id: number, vector: number[]) {
     if (this.enter_point === null) {
-      const node = new Node(node_id, vector);
-      this.insertNode(node, 0);
-      this.enter_point = node_id;
-      return;
+      const node = new Node(node_id, vector)
+      this.insertNode(node, 0)
+      this.enter_point = node_id
+      return
     }
-  
-    const maxLevel = Math.floor(Math.log2(Object.keys(this.nodes).length)) + 1;
-    let curLevel = 0;
+
+    const maxLevel = Math.floor(Math.log2(Object.keys(this.nodes).length)) + 1
+    let curLevel = 0
     while (Math.random() < 0.5 && curLevel < maxLevel) {
-      curLevel += 1;
+      curLevel += 1
     }
-  
-    const node = new Node(node_id, vector);
-    this.insertNode(node, curLevel);
-  
-    let curNodeId = this.enter_point;
-    let startLevel = this.levels.length - 1;
-  
+
+    const node = new Node(node_id, vector)
+    this.insertNode(node, curLevel)
+
+    let curNodeId = this.enter_point
+    let startLevel = this.levels.length - 1
+
     // Skipping unnecessary levels above the current node's level
     if (curLevel < startLevel) {
-      startLevel = curLevel;
+      startLevel = curLevel
     }
-  
+
     while (startLevel > (node.level as number)) {
-      const candidates = this.searchLayer(curNodeId, vector, 1);
-      curNodeId = candidates[0][1];
-      startLevel -= 1;
+      const candidates = this.searchLayer(curNodeId, vector, 1)
+      curNodeId = candidates[0][1]
+      startLevel -= 1
     }
-  
+
     while (startLevel >= 0) {
-      const candidates = this.searchLayer(curNodeId, vector, this.M);
-      curNodeId = candidates[0][1];
-  
+      const candidates = this.searchLayer(curNodeId, vector, this.M)
+      curNodeId = candidates[0][1]
+
       if (candidates.length > this.M) {
-        candidates.splice(0, candidates.length - this.M);
+        candidates.splice(0, candidates.length - this.M)
       }
-  
+
       for (const [, neighborId] of candidates) {
-        node.addNeighbor(neighborId);
-        this.nodes[neighborId].addNeighbor(node_id);
+        node.addNeighbor(neighborId)
+        this.nodes[neighborId].addNeighbor(node_id)
       }
-  
-      startLevel -= 1;
+
+      startLevel -= 1
     }
-  }  
-  
+  }
 
   public serialize(): Uint8Array {
     // Compute the size needed for the buffer
