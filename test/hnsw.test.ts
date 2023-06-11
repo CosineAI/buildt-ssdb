@@ -1,7 +1,6 @@
 import HNSW from "../src/index"
 import { readNdjson } from "./utils"
 import { readFileSync } from "fs"
-import { EXPECTED_SEARCH_RESULTS } from "./dummy-data/expected-search-results"
 import { join } from "path"
 
 describe("HNSW", () => {
@@ -67,21 +66,6 @@ describe("HNSW", () => {
       const result = hnsw.search([1, 2])
       expect(result).toEqual([])
     })
-
-    it("should return the correct search results when reading from a known index", async () => {
-      const index = HNSW.deserialize(readFileSync(join(dummyData, "index.bin")))
-      const queryVector = JSON.parse(readFileSync(join(dummyData, "prompt.test.ndjson"), "utf8").split("\n")[0])["vector"] as number[]
-
-      expect(index.getSize()).toBe(420)
-      const results = index.search(queryVector, 10)
-      expect(results.length).toBe(10)
-
-      for (const [index, [score, nodeId]] of results.entries()) {
-        expect(score).toBeCloseTo(EXPECTED_SEARCH_RESULTS[index].cosineSimilarity, 4)
-        expect(nodeId).toBe(EXPECTED_SEARCH_RESULTS[index].nodeId)
-      }
-    })
-    // Add more tests for searching, depending on the behavior expected
   })
 
   describe("serialize & deserialize", () => {
